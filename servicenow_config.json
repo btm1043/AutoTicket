@@ -1,0 +1,55 @@
+{
+  "start_url": "https://127.0.0.1:8443",
+  "host_regex": "(service-now\\.com|your-internal-servicenow-host)",
+  "ready_dom_selector": "#incident\\.short_description, input[name='incident.short_description']",
+  "outlook": {
+    "inbox_subfolder": "AutoTicket"
+  },
+  "field_bindings": [
+    {
+      "value_key": "short_description",
+      "form_field": "short_description",
+      "selectors": [
+        "#incident\\.short_description",
+        "input[name='incident.short_description']",
+        "input[name='short_description']"
+      ]
+    },
+    {
+      "value_key": "description",
+      "form_field": "description",
+      "selectors": [
+        "#incident\\.description",
+        "textarea[name='incident.description']",
+        "textarea[name='description']"
+      ]
+    },
+    {
+      "value_key": "caller_id",
+      "form_field": "caller_id",
+      "selectors": [
+        "#sys_display\\.incident\\.caller_id",
+        "input[name='sys_display.incident.caller_id']",
+        "input[name='caller_id']"
+      ]
+    },
+    {
+      "value_key": "category",
+      "form_field": "category",
+      "selectors": [
+        "#incident\\.category",
+        "select[name='incident.category']",
+        "select[name='category']"
+      ]
+    },
+    {
+      "value_key": "subcategory",
+      "form_field": "subcategory",
+      "selectors": [
+        "#incident\\.subcategory",
+        "select[name='incident.subcategory']",
+        "select[name='subcategory']"
+      ]
+    }
+  ]
+}

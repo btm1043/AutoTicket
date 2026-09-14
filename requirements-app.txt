@@ -1,0 +1,6 @@
+PyQt5
+PyQtWebEngine
+extract-msg
+playwright
+websocket-client
+pywin32
