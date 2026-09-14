@@ -32,6 +32,12 @@ http://127.0.0.1:9222
 
 ## Change the CDP port
 
+Use **Settings > Playwright Connection** to save a host, port and operation timeout
+in the local `settings.ini`, then restart. The dialog shows the active endpoint.
+Environment variables below override the saved host and port. An explicitly set
+`QTWEBENGINE_REMOTE_DEBUGGING` still controls Qt's listener; keep it consistent
+with your selected endpoint port.
+
 If port `9222` is already in use:
 
 ```powershell

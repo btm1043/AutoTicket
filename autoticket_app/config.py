@@ -1,8 +1,12 @@
 import json
+import os
+import re
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from autoticket_app.models import FieldBinding
 
@@ -180,3 +184,41 @@ def load_servicenow_settings(local_data_dir: Path | None = None) -> ServiceNowCo
         "No ServiceNow config file was found. Looked in:\n"
         f"{searched}"
     )
+
+
+def save_servicenow_settings(local_data_dir: Path, current: ServiceNowSettings,
+                            start_url: str, host_regex: str, ready_dom_selector: str,
+                            field_bindings: Any, inbox_subfolder: str) -> ServiceNowConfigLoadResult:
+    """Validate and atomically write a per-user profile, preserving extra keys."""
+    start_url = start_url.strip()
+    try:
+        url = urlsplit(start_url)
+        if url.scheme not in ("http", "https") or not url.hostname or url.username or url.password:
+            raise ValueError("Use an HTTP(S) landing URL without embedded credentials")
+        url.port
+        re.compile(host_regex)
+        if not re.search(host_regex, start_url, re.IGNORECASE):
+            raise ValueError("The host pattern must match the landing URL")
+    except (ValueError, re.error) as exc:
+        raise ConfigError(str(exc)) from exc
+    data = _load_json_file(current.source_path)
+    data.update(start_url=start_url, host_regex=host_regex,
+                ready_dom_selector=ready_dom_selector.strip(), field_bindings=field_bindings)
+    data["outlook"] = {**data.get("outlook", {}), "inbox_subfolder": inbox_subfolder.strip()}
+    path = local_data_dir / SERVICENOW_CONFIG_FILENAME
+    settings = _parse_servicenow_settings(data, path)
+    outlook = _parse_outlook_settings(data)
+    temporary = None
+    try:
+        local_data_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=local_data_dir,
+                                         delete=False) as handle:
+            temporary = Path(handle.name)
+            json.dump(data, handle, indent=2)
+        os.replace(temporary, path)
+    except OSError as exc:
+        raise ConfigError(f"Could not save settings: {exc}") from exc
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+    return ServiceNowConfigLoadResult(settings, outlook)

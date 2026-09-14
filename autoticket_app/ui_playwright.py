@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 
 from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt5.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLabel, QLineEdit, QMessageBox, QSpinBox
 
 from autoticket_app.playwright_cdp import (
     PlaywrightCdpError,
@@ -24,6 +25,46 @@ class PlaywrightMainWindow(MainWindow):
         self.script_result_bridge.succeeded.connect(self._on_script_succeeded)
         self.script_result_bridge.failed.connect(self._on_script_failed)
         super().__init__()
+        self.settings_menu.addAction("Playwright Connection...", self.edit_connection_settings)
+
+    def edit_connection_settings(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Playwright Connection Settings")
+        layout = QFormLayout(dialog)
+        host = QLineEdit(self.rules_settings.value("cdp/host", "127.0.0.1", type=str))
+        port = QSpinBox()
+        port.setRange(1, 65535)
+        port.setValue(self.rules_settings.value("cdp/port", 9222, type=int))
+        timeout = QSpinBox()
+        timeout.setRange(1000, 120000)
+        timeout.setSuffix(" ms")
+        timeout.setValue(self.rules_settings.value("cdp/timeout_ms", 15000, type=int))
+        layout.addRow("Endpoint host", host)
+        layout.addRow("Debugging port", port)
+        layout.addRow("Operation timeout", timeout)
+        note = QLabel("Changes apply after restart. AUTOTICKET_CDP_HOST/PORT and QTWEBENGINE_REMOTE_DEBUGGING environment overrides remain in effect.")
+        note.setWordWrap(True)
+        layout.addRow(note)
+        layout.addRow(QLabel(f"Active endpoint: {self.cdp_evaluator.settings.endpoint_url}"))
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        def save():
+            import re
+            value = host.text().strip()
+            if not re.fullmatch(r"[a-zA-Z0-9.-]+", value):
+                QMessageBox.warning(dialog, "Invalid Host", "Enter a hostname or IPv4 address without a URL scheme or port.")
+                return
+            self.rules_settings.setValue("cdp/host", value)
+            self.rules_settings.setValue("cdp/port", port.value())
+            self.rules_settings.setValue("cdp/timeout_ms", timeout.value())
+            self.rules_settings.sync()
+            if self.rules_settings.status() != self.rules_settings.NoError:
+                QMessageBox.warning(dialog, "Settings Not Saved", "Could not write local settings.")
+                return
+            dialog.accept()
+        buttons.accepted.connect(save)
+        buttons.rejected.connect(dialog.reject)
+        layout.addRow(buttons)
+        dialog.exec()
 
     def _log_startup(self):
         super()._log_startup()

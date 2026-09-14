@@ -5,6 +5,8 @@ from pathlib import Path
 from PyQt5.QtCore import QObject, QSettings, QTimer, Qt, QUrl, pyqtSignal
 from PyQt5.QtWidgets import (
     QHBoxLayout,
+    QCheckBox,
+    QDialog,
     QFileDialog,
     QInputDialog,
     QLabel,
@@ -14,6 +16,8 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
+    QStackedWidget,
+    QScrollArea,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -29,6 +33,9 @@ from autoticket_app.config import (
 )
 from autoticket_app.features import build_example_ticket, build_ticket_from_email
 from autoticket_app.category_rules import load_category_rules
+from autoticket_app.rules_store import load_rules_snapshot, save_rules_snapshot
+from autoticket_app.settings_dialog import ServiceNowSettingsDialog
+from autoticket_app.ticket_editor import TicketEditor, QUICK_TICKETS, build_quick_ticket
 from autoticket_app.models import Ticket
 from autoticket_app.msg_parser import parse_msg
 from autoticket_app.outlook import (
@@ -104,7 +111,7 @@ class CategoryRulesBridge(QObject):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("ServiceNow Form Filler Debug")
+        self.setWindowTitle("AutoTicket")
         self.resize(1500, 900)
 
         self.local_data_dir = get_local_app_data_dir(APP_NAME)
@@ -117,7 +124,11 @@ class MainWindow(QMainWindow):
         self.outlook_queue: list[OutlookQueueItem] = []
         self.current_outlook_item: OutlookQueueItem | None = None
         self.category_rules = ()
-        self.rules_settings = QSettings(APP_NAME, "CategoryRules")
+        self.rules_settings = QSettings(str(self.local_data_dir / "settings.ini"), QSettings.IniFormat)
+        if not self.rules_settings.contains("source"):
+            previous = QSettings(APP_NAME, "CategoryRules").value("source", "", type=str)
+            self.rules_settings.setValue("source", previous)
+        self.rules_snapshot_path = self.local_data_dir / "category_rules_cache.json"
         self.rules_bridge = CategoryRulesBridge(self)
         self.rules_bridge.loaded.connect(self._rules_loaded)
         self.rules_bridge.failed.connect(self._rules_failed)
@@ -125,8 +136,10 @@ class MainWindow(QMainWindow):
         self._build_browser()
         self._build_controls()
         self._build_layout()
+        self._build_settings_menu()
         self._log_startup()
-        if self.rules_source_input.text().strip():
+        self._restore_local_rules()
+        if self.refresh_rules_checkbox.isChecked() and self.rules_source_input.text().strip():
             QTimer.singleShot(0, self.reload_category_rules)
 
         self.view.setUrl(QUrl(self.servicenow_settings.start_url))
@@ -158,6 +171,9 @@ class MainWindow(QMainWindow):
         self.btn_reload_rules.clicked.connect(self.reload_category_rules)
         self.rules_status = QLabel("No category rules loaded")
         self.rules_status.setWordWrap(True)
+        self.refresh_rules_checkbox = QCheckBox("Refresh from source when the app starts")
+        self.refresh_rules_checkbox.setChecked(self.rules_settings.value("refresh_on_startup", False, type=bool))
+        self.refresh_rules_checkbox.toggled.connect(self._save_refresh_preference)
 
         self.json_input = QTextEdit()
         self.json_input.setPlaceholderText("Paste normalized ticket JSON here...")
@@ -183,9 +199,8 @@ class MainWindow(QMainWindow):
         self.btn_load_example = QPushButton("Load Example JSON")
         self.btn_load_example.clicked.connect(self.load_example_json)
 
-        self.outlook_folder_input = QLineEdit()
-        self.outlook_folder_input.setPlaceholderText("Inbox subfolder, e.g. AutoTicket or Parent/Child")
-        self.outlook_folder_input.setText(self.outlook_settings.inbox_subfolder)
+        self.outlook_folder_label = QLabel(f"Outlook: Inbox/{self.outlook_settings.inbox_subfolder}")
+        self.outlook_folder_label.setWordWrap(True)
 
         self.outlook_queue_list = QListWidget()
 
@@ -201,13 +216,11 @@ class MainWindow(QMainWindow):
     def _build_layout(self):
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
-        right_layout.addWidget(QLabel("Email Category Rules (JSON / XML)"))
-        right_layout.addWidget(self.rules_source_input)
-        rules_row = QHBoxLayout()
-        rules_row.addWidget(self.btn_browse_rules)
-        rules_row.addWidget(self.btn_reload_rules)
-        right_layout.addLayout(rules_row)
-        right_layout.addWidget(self.rules_status)
+        self.debug_toggle = QCheckBox("Show debug views")
+        right_layout.addWidget(self.debug_toggle)
+        self.active_rules_status = QLabel("Category rules: none loaded")
+        self.active_rules_status.setWordWrap(True)
+        right_layout.addWidget(self.active_rules_status)
 
         btn_row = QHBoxLayout()
         btn_row.addWidget(self.btn_check_ready)
@@ -216,13 +229,43 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(self.btn_load_example)
         btn_row.addWidget(self.btn_clear_log)
 
-        right_layout.addWidget(QLabel("JSON Test Input"))
-        right_layout.addWidget(self.json_input, 3)
-        right_layout.addLayout(btn_row)
-        right_layout.addWidget(QLabel("Parsed / Normalized Fields"))
-        right_layout.addWidget(self.parsed_output, 2)
-        right_layout.addWidget(QLabel("Outlook Inbox Subfolder"))
-        right_layout.addWidget(self.outlook_folder_input)
+        self.panel_stack = QStackedWidget()
+        normal = QWidget()
+        normal_layout = QVBoxLayout(normal)
+        normal_layout.addWidget(QLabel("Start a ticket"))
+        quick_row = QHBoxLayout()
+        for name in QUICK_TICKETS:
+            button = QPushButton(name)
+            button.clicked.connect(lambda checked=False, name=name: self.start_quick_ticket(name))
+            quick_row.addWidget(button)
+        normal_layout.addLayout(quick_row)
+        self.ticket_editor = TicketEditor()
+        normal_layout.addWidget(self.ticket_editor)
+        actions = QHBoxLayout()
+        blank = QPushButton("New Blank Ticket")
+        blank.clicked.connect(lambda: self.start_quick_ticket(None))
+        fill = QPushButton("Fill ServiceNow Form")
+        fill.clicked.connect(self.fill_from_editor)
+        actions.addWidget(blank)
+        actions.addWidget(fill)
+        normal_layout.addLayout(actions)
+        normal_layout.addWidget(QLabel("Review the filled form in ServiceNow before submitting."))
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(normal)
+        self.panel_stack.addWidget(scroll)
+        debug = QWidget()
+        debug_layout = QVBoxLayout(debug)
+        debug_layout.addWidget(QLabel("JSON Test Input"))
+        debug_layout.addWidget(self.json_input, 3)
+        debug_layout.addLayout(btn_row)
+        debug_layout.addWidget(QLabel("Parsed / Normalized Fields"))
+        debug_layout.addWidget(self.parsed_output, 2)
+        debug_layout.addWidget(QLabel("Debug Log"))
+        debug_layout.addWidget(self.log_output, 2)
+        self.panel_stack.addWidget(debug)
+        right_layout.addWidget(self.panel_stack, 4)
+        right_layout.addWidget(self.outlook_folder_label)
         outlook_btn_row = QHBoxLayout()
         outlook_btn_row.addWidget(self.btn_scan_outlook)
         outlook_btn_row.addWidget(self.btn_load_next_outlook)
@@ -230,8 +273,11 @@ class MainWindow(QMainWindow):
         right_layout.addLayout(outlook_btn_row)
         right_layout.addWidget(QLabel("Outlook Queue"))
         right_layout.addWidget(self.outlook_queue_list, 2)
-        right_layout.addWidget(QLabel("Debug Log"))
-        right_layout.addWidget(self.log_output, 2)
+        self.ticket_status = QLabel("Ready to prepare a ticket")
+        self.ticket_status.setWordWrap(True)
+        right_layout.addWidget(self.ticket_status)
+        self.debug_toggle.toggled.connect(self.toggle_debug_views)
+        self.debug_toggle.setChecked(self.rules_settings.value("ui/debug_views", False, type=bool))
 
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
@@ -245,6 +291,41 @@ class MainWindow(QMainWindow):
         splitter.setSizes([950, 550])
 
         self.setCentralWidget(splitter)
+
+    def toggle_debug_views(self, enabled):
+        try:
+            if enabled:
+                self.set_json(self.ticket_editor.ticket())
+            else:
+                self.ticket_editor.set_ticket(Ticket.from_dict(self.get_json()))
+        except (ValueError, TypeError) as exc:
+            self.debug_toggle.blockSignals(True)
+            self.debug_toggle.setChecked(True)
+            self.debug_toggle.blockSignals(False)
+            QMessageBox.warning(self, "Invalid Ticket JSON", f"Fix the JSON before leaving debug view: {exc}")
+            return
+        self.panel_stack.setCurrentIndex(1 if enabled else 0)
+        self.rules_settings.setValue("ui/debug_views", enabled)
+        self.rules_settings.sync()
+
+    def start_quick_ticket(self, name):
+        current = self.ticket_editor.ticket()
+        if any(str(value).strip() for value in current.to_dict().values()):
+            answer = QMessageBox.question(self, "Start New Ticket", "Replace the current ticket draft?",
+                                          QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                return
+        self.current_outlook_item = None
+        self.set_ticket(build_quick_ticket(name) if name else Ticket())
+        self.ticket_status.setText(f"{name or 'Blank ticket'} draft ready. Add caller and issue details.")
+
+    def fill_from_editor(self):
+        ticket = self.ticket_editor.ticket()
+        if not ticket.short_description.strip():
+            QMessageBox.warning(self, "Summary Required", "Enter a ticket summary before filling the form.")
+            return
+        self.set_ticket(ticket)
+        self.fill_from_json()
 
     def _log_startup(self):
         self.log(f"[profile] local data dir: {self.local_data_dir}")
@@ -433,6 +514,73 @@ class MainWindow(QMainWindow):
         ready = bool(result.get("ready")) if isinstance(result, dict) else False
         self.drop_label.set_armed(ready)
         self.log(f"[ready] {result}")
+        self.ticket_status.setText("ServiceNow form ready" if ready else "Navigate to the ServiceNow ticket form to fill it")
+
+    def _build_settings_menu(self):
+        self.category_settings_dialog = QDialog(self)
+        self.category_settings_dialog.setWindowTitle("Category Rule Settings")
+        self.category_settings_dialog.resize(650, 260)
+        layout = QVBoxLayout(self.category_settings_dialog)
+        layout.addWidget(QLabel("Rules source: local JSON/XML file or HTTP(S) URL"))
+        layout.addWidget(self.rules_source_input)
+        row = QHBoxLayout()
+        row.addWidget(self.btn_browse_rules)
+        row.addWidget(self.btn_reload_rules)
+        layout.addLayout(row)
+        layout.addWidget(self.refresh_rules_checkbox)
+        layout.addWidget(QLabel("Successfully loaded rules are saved locally and reused on startup."))
+        layout.addWidget(self.rules_status)
+        storage_label = QLabel(f"Local storage: {self.local_data_dir}")
+        storage_label.setWordWrap(True)
+        storage_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(storage_label)
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.category_settings_dialog.close)
+        layout.addWidget(close_button)
+        menu = self.menuBar().addMenu("Settings")
+        self.settings_menu = menu
+        menu.addAction("ServiceNow and Outlook...", self.edit_service_settings)
+        menu.addAction("Category Rules...", self.category_settings_dialog.show)
+        menu.addSeparator()
+        menu.addAction("Open ServiceNow Landing Page", self.open_landing_page)
+
+    def open_landing_page(self):
+        self.view.setUrl(QUrl(self.servicenow_settings.start_url))
+
+    def edit_service_settings(self):
+        dialog = ServiceNowSettingsDialog(self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        result = dialog.result_settings
+        folder_changed = self.outlook_settings != result.outlook
+        self.servicenow_settings = result.settings
+        self.outlook_settings = result.outlook
+        self.outlook_folder_label.setText(f"Outlook: Inbox/{result.outlook.inbox_subfolder}")
+        if folder_changed:
+            self.outlook_queue = []
+            self.current_outlook_item = None
+            self.refresh_outlook_queue_list()
+        self.drop_label.set_armed(False)
+        self.on_load_finished(True)
+        self.log(f"[config] settings saved to {result.settings.source_path}")
+
+    def _save_refresh_preference(self, enabled):
+        self.rules_settings.setValue("refresh_on_startup", enabled)
+        self.rules_settings.sync()
+
+    def _restore_local_rules(self):
+        if not self.rules_snapshot_path.exists():
+            return
+        try:
+            source, rules = load_rules_snapshot(self.rules_snapshot_path)
+        except (OSError, ValueError) as exc:
+            self.rules_status.setText("Saved rules could not be read. Load a rules source to recover.")
+            self.log(f"[categories][error] saved rules: {exc}")
+            return
+        self.category_rules = rules
+        self.rules_source_input.setText(source)
+        self.rules_status.setText(f"Using {len(rules)} saved rules. Load / Reload Rules checks the source for updates.")
+        self.active_rules_status.setText(f"Category rules: {len(rules)} loaded from local storage")
 
     def browse_category_rules(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select Category Rules", "", "Category Rules (*.json *.xml)")
@@ -451,6 +599,7 @@ class MainWindow(QMainWindow):
     def _load_rules_worker(self, source):
         try:
             rules = load_category_rules(source)
+            save_rules_snapshot(self.rules_snapshot_path, source, rules)
         except Exception as exc:
             self.rules_bridge.failed.emit(str(exc))
         else:
@@ -464,8 +613,10 @@ class MainWindow(QMainWindow):
     def _rules_loaded(self, source, rules):
         self.category_rules = rules
         self.rules_settings.setValue("source", source)
+        self.rules_settings.sync()
         self._enable_rules_controls()
-        self.rules_status.setText(f"Loaded {len(rules)} subcategory rules. Applies to the next email loaded.")
+        self.rules_status.setText(f"Loaded and saved {len(rules)} subcategory rules. Applies to the next email loaded.")
+        self.active_rules_status.setText(f"Category rules: {len(rules)} loaded and saved locally")
         self.log(f"[categories] loaded {len(rules)} rules")
 
     def _rules_failed(self, error):
@@ -487,6 +638,7 @@ class MainWindow(QMainWindow):
         try:
             email = parse_msg(path)
             ticket = self._ticket_from_email(email)
+            self.current_outlook_item = None
             self.set_ticket(ticket)
             self.log("[msg] parsed and loaded into JSON panel")
         except Exception as exc:
@@ -494,7 +646,7 @@ class MainWindow(QMainWindow):
             self.log(f"[msg][error] {exc}")
 
     def scan_outlook(self):
-        folder = self.outlook_folder_input.text().strip()
+        folder = self.outlook_settings.inbox_subfolder
         if not folder:
             QMessageBox.warning(self, "Outlook Folder Required", "Enter an Inbox subfolder to scan.")
             return
@@ -554,6 +706,7 @@ class MainWindow(QMainWindow):
         self.log("[outlook] marked current email as acted")
 
     def set_ticket(self, ticket: Ticket):
+        self.ticket_editor.set_ticket(ticket)
         data = ticket.to_dict()
         self.set_json(data)
         self.parsed_output.setPlainText(json.dumps(data, indent=2))
@@ -601,3 +754,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pretty = str(result)
         self.log(f"[fill][result]\n{pretty}")
+        if not isinstance(result, dict) or result.get("error"):
+            self.ticket_status.setText("Could not confirm the form fill. Check the ServiceNow page or enable debug views for details.")
+        else:
+            self.ticket_status.setText("Form fill finished. Review the ServiceNow form and check any missing fields.")

@@ -1,6 +1,7 @@
 # Email category rules
 
-Use **Browse Rules** in the application to select a UTF-8 JSON or XML file.
+Open **Settings > Category Rules**, then use **Browse Rules** to select a UTF-8
+JSON or XML file. The main window shows a compact summary of the active rules.
 Examples are in `examples/category_rules.json` and `examples/category_rules.xml`;
 both describe the same rules. Edit their category/subcategory names to match the
 values expected by your ServiceNow form.
@@ -31,16 +32,28 @@ in the rules source field, then click **Load / Reload Rules**. The URL need not
 end in `.json` or `.xml`; content determines the format. Only the rules are
 downloaded; email contents are not sent to the rules server.
 
-The last successfully loaded source is remembered per Windows user and loaded
-again on startup. Relative file paths are relative to the process working
+The last successfully loaded rules are saved per Windows user and restored
+from local storage on startup, even if the original file or server is unavailable.
+No rules server connection is required unless you click **Load / Reload Rules**
+or enable **Refresh from source when the app starts** in Settings (off by default).
+Relative file paths are relative to the process working
 directory; the file picker supplies an absolute path. Reload after changing a
 file or its hosted contents. New rules apply to subsequently loaded emails;
 reload an email to classify it again. While loading, emails use the current
 rules. Downloads run in a background thread, use a 10-second socket timeout,
 and accept at most 2 MB. HTTPS uses normal certificate validation.
 
-On a failed reload the previous rules remain active for that session. There is
-no persistent offline cache: if startup loading fails, categories remain blank
-until rules load successfully. Authenticated hosting and automatic refresh are
-not configured; these can be added once the server requirements are known.
+Preferences are stored in `settings.ini` and the last valid rules and their source
+in `category_rules_cache.json` in the application's local data directory (normally
+`%LOCALAPPDATA%/AutoTicket`). The Settings dialog displays the exact directory.
+The previous registry-based source preference is migrated automatically.
+Snapshots are validated and replaced atomically. On a failed reload or save,
+the previous rules remain active and the previous snapshot is retained. If the
+snapshot is missing or corrupt, load the source again through Settings.
+Changes apply to the next email loaded. Closing Settings does not load an edited
+source: use **Load / Reload Rules** to validate and save it. The refresh checkbox
+is saved immediately.
+
+Local rule matching works offline; accessing ServiceNow still requires its normal
+connection. Authenticated rules hosting is not configured yet.
 XML DTDs and entity declarations are rejected.

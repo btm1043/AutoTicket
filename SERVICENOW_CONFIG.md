@@ -2,6 +2,25 @@
 
 `AutoTicket` now loads ServiceNow form settings from `servicenow_config.json`.
 
+## Settings menu
+
+Open **Settings > ServiceNow and Outlook** to edit the landing URL and Outlook
+Inbox subfolder. The **Advanced Form Settings** tab contains the allowed URL
+regex, form-ready CSS selector, and field mappings as a JSON array. When changing
+instances, use **Use Landing URL Host** to derive a matching URL pattern.
+
+**Save** validates the values and atomically writes the local user profile.
+The bundled/project configuration remains unchanged; extra configuration keys are
+preserved. **Cancel** discards edits. Settings apply immediately without navigating
+away from the current form. Use **Settings > Open ServiceNow Landing Page** when
+ready to navigate. Changing Outlook folders clears the old queue and selection;
+scan again to load the new folder. The main window displays the configured folder.
+
+Category rules remain under **Settings > Category Rules**. The Playwright variant
+also provides **Settings > Playwright Connection** for host, port and timeout;
+those changes require restart. Browser profile storage, acted-email history and
+TLS behavior remain managed by the application, rather than editable preferences.
+
 ## Where the app looks
 
 The app loads the first valid file it finds in this order:

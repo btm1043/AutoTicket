@@ -9,11 +9,22 @@ DEFAULT_CDP_PORT = "9222"
 
 
 def _get_cdp_host() -> str:
-    return os.environ.get("AUTOTICKET_CDP_HOST", DEFAULT_CDP_HOST).strip() or DEFAULT_CDP_HOST
+    return os.environ.get("AUTOTICKET_CDP_HOST", _local_preferences().value("cdp/host", DEFAULT_CDP_HOST, type=str)).strip() or DEFAULT_CDP_HOST
 
 
 def _get_cdp_port() -> str:
-    return os.environ.get("AUTOTICKET_CDP_PORT", DEFAULT_CDP_PORT).strip() or DEFAULT_CDP_PORT
+    return os.environ.get("AUTOTICKET_CDP_PORT", _local_preferences().value("cdp/port", DEFAULT_CDP_PORT, type=str)).strip() or DEFAULT_CDP_PORT
+
+
+def _local_preferences():
+    from pathlib import Path
+    from PyQt5.QtCore import QCoreApplication, QSettings, QStandardPaths
+    from autoticket_app.config import APP_NAME
+
+    QCoreApplication.setApplicationName(APP_NAME)
+    location = QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation)
+    directory = Path(location) if location else Path.home() / "AppData" / "Local" / APP_NAME
+    return QSettings(str(directory / "settings.ini"), QSettings.IniFormat)
 
 
 def _configure_qtwebengine_cdp() -> str:
@@ -35,7 +46,8 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     try:
-        window = PlaywrightMainWindow(PlaywrightCdpSettings(endpoint_url=cdp_endpoint))
+        timeout = _local_preferences().value("cdp/timeout_ms", 15000, type=int)
+        window = PlaywrightMainWindow(PlaywrightCdpSettings(endpoint_url=cdp_endpoint, operation_timeout_ms=timeout))
     except ConfigError as exc:
         QMessageBox.critical(None, "ServiceNow Config Error", str(exc))
         sys.exit(1)
