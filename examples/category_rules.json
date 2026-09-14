@@ -1,0 +1,17 @@
+{
+  "categories": [
+    {
+      "name": "Network",
+      "subcategories": [
+        {"name": "VPN", "keywords": ["vpn", "error 809", "remote access"]},
+        {"name": "WiFi", "keywords": ["wifi", "wi-fi", "wireless"]}
+      ]
+    },
+    {
+      "name": "Hardware",
+      "subcategories": [
+        {"name": "Printer", "keywords": ["printer", "paper jam", "toner"]}
+      ]
+    }
+  ]
+}

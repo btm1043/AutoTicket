@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<categories>
+  <category name="Network">
+    <subcategory name="VPN">
+      <keyword>vpn</keyword>
+      <keyword>error 809</keyword>
+      <keyword>remote access</keyword>
+    </subcategory>
+    <subcategory name="WiFi">
+      <keyword>wifi</keyword>
+      <keyword>wi-fi</keyword>
+      <keyword>wireless</keyword>
+    </subcategory>
+  </category>
+  <category name="Hardware">
+    <subcategory name="Printer">
+      <keyword>printer</keyword>
+      <keyword>paper jam</keyword>
+      <keyword>toner</keyword>
+    </subcategory>
+  </category>
+</categories>

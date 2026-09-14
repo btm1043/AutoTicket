@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from autoticket_app.models import ParsedEmail, Ticket
+from autoticket_app.category_rules import CategoryRule, match_category
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ def apply_ticket_features(
 def build_ticket_from_email(
     email: ParsedEmail,
     features: Iterable[TicketFeature] | None = None,
+    category_rules: tuple[CategoryRule, ...] = (),
 ) -> Ticket:
     ticket = Ticket(
         short_description=email.subject or "",
@@ -56,6 +58,10 @@ def build_ticket_from_email(
         caller_name=email.sender_name or "",
         caller_email=email.sender_email or "",
     )
+    match = match_category(email, category_rules)
+    if match is not None:
+        ticket.category = match.category
+        ticket.subcategory = match.subcategory
     return apply_ticket_features(
         ticket,
         features=features,

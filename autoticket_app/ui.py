@@ -1,9 +1,11 @@
 import json
+import threading
 from pathlib import Path
 
-from PyQt5.QtCore import QTimer, Qt, QUrl
+from PyQt5.QtCore import QObject, QSettings, QTimer, Qt, QUrl, pyqtSignal
 from PyQt5.QtWidgets import (
     QHBoxLayout,
+    QFileDialog,
     QInputDialog,
     QLabel,
     QLineEdit,
@@ -26,6 +28,7 @@ from autoticket_app.config import (
     load_servicenow_settings,
 )
 from autoticket_app.features import build_example_ticket, build_ticket_from_email
+from autoticket_app.category_rules import load_category_rules
 from autoticket_app.models import Ticket
 from autoticket_app.msg_parser import parse_msg
 from autoticket_app.outlook import (
@@ -93,6 +96,11 @@ class DropLabel(QLabel):
                 return
 
 
+class CategoryRulesBridge(QObject):
+    loaded = pyqtSignal(str, object)
+    failed = pyqtSignal(str)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -108,11 +116,18 @@ class MainWindow(QMainWindow):
         self.outlook_store = OutlookActedStore(self.local_data_dir / "outlook_acted.json")
         self.outlook_queue: list[OutlookQueueItem] = []
         self.current_outlook_item: OutlookQueueItem | None = None
+        self.category_rules = ()
+        self.rules_settings = QSettings(APP_NAME, "CategoryRules")
+        self.rules_bridge = CategoryRulesBridge(self)
+        self.rules_bridge.loaded.connect(self._rules_loaded)
+        self.rules_bridge.failed.connect(self._rules_failed)
 
         self._build_browser()
         self._build_controls()
         self._build_layout()
         self._log_startup()
+        if self.rules_source_input.text().strip():
+            QTimer.singleShot(0, self.reload_category_rules)
 
         self.view.setUrl(QUrl(self.servicenow_settings.start_url))
 
@@ -134,6 +149,16 @@ class MainWindow(QMainWindow):
         self.drop_label = DropLabel(self)
 
     def _build_controls(self):
+        self.rules_source_input = QLineEdit()
+        self.rules_source_input.setPlaceholderText("JSON/XML file path or https://server/categories.json")
+        self.rules_source_input.setText(self.rules_settings.value("source", "", type=str))
+        self.btn_browse_rules = QPushButton("Browse Rules")
+        self.btn_browse_rules.clicked.connect(self.browse_category_rules)
+        self.btn_reload_rules = QPushButton("Load / Reload Rules")
+        self.btn_reload_rules.clicked.connect(self.reload_category_rules)
+        self.rules_status = QLabel("No category rules loaded")
+        self.rules_status.setWordWrap(True)
+
         self.json_input = QTextEdit()
         self.json_input.setPlaceholderText("Paste normalized ticket JSON here...")
 
@@ -176,6 +201,13 @@ class MainWindow(QMainWindow):
     def _build_layout(self):
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
+        right_layout.addWidget(QLabel("Email Category Rules (JSON / XML)"))
+        right_layout.addWidget(self.rules_source_input)
+        rules_row = QHBoxLayout()
+        rules_row.addWidget(self.btn_browse_rules)
+        rules_row.addWidget(self.btn_reload_rules)
+        right_layout.addLayout(rules_row)
+        right_layout.addWidget(self.rules_status)
 
         btn_row = QHBoxLayout()
         btn_row.addWidget(self.btn_check_ready)
@@ -402,11 +434,59 @@ class MainWindow(QMainWindow):
         self.drop_label.set_armed(ready)
         self.log(f"[ready] {result}")
 
+    def browse_category_rules(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Select Category Rules", "", "Category Rules (*.json *.xml)")
+        if path:
+            self.rules_source_input.setText(path)
+            self.reload_category_rules()
+
+    def reload_category_rules(self):
+        source = self.rules_source_input.text().strip()
+        self.btn_reload_rules.setEnabled(False)
+        self.btn_browse_rules.setEnabled(False)
+        self.rules_source_input.setEnabled(False)
+        self.rules_status.setText("Loading rules; emails use the previous rules until loading completes.")
+        threading.Thread(target=self._load_rules_worker, args=(source,), daemon=True).start()
+
+    def _load_rules_worker(self, source):
+        try:
+            rules = load_category_rules(source)
+        except Exception as exc:
+            self.rules_bridge.failed.emit(str(exc))
+        else:
+            self.rules_bridge.loaded.emit(source, rules)
+
+    def _enable_rules_controls(self):
+        self.btn_reload_rules.setEnabled(True)
+        self.btn_browse_rules.setEnabled(True)
+        self.rules_source_input.setEnabled(True)
+
+    def _rules_loaded(self, source, rules):
+        self.category_rules = rules
+        self.rules_settings.setValue("source", source)
+        self._enable_rules_controls()
+        self.rules_status.setText(f"Loaded {len(rules)} subcategory rules. Applies to the next email loaded.")
+        self.log(f"[categories] loaded {len(rules)} rules")
+
+    def _rules_failed(self, error):
+        self._enable_rules_controls()
+        self.rules_status.setText(f"Rules load failed; {len(self.category_rules)} previous rules remain active.")
+        self.log(f"[categories][error] {error}")
+        QMessageBox.warning(self, "Category Rules Error", error)
+
+    def _ticket_from_email(self, email):
+        ticket = build_ticket_from_email(email, category_rules=self.category_rules)
+        if ticket.category:
+            self.log(f"[categories] matched {ticket.category} / {ticket.subcategory}")
+        else:
+            self.log("[categories] no match" if self.category_rules else "[categories] no rules loaded")
+        return ticket
+
     def load_msg_file(self, path: str):
         self.log(f"[msg] loading {path}")
         try:
             email = parse_msg(path)
-            ticket = build_ticket_from_email(email)
+            ticket = self._ticket_from_email(email)
             self.set_ticket(ticket)
             self.log("[msg] parsed and loaded into JSON panel")
         except Exception as exc:
@@ -456,7 +536,7 @@ class MainWindow(QMainWindow):
         index = self._selected_outlook_index()
         item = self.outlook_queue[index]
         self.current_outlook_item = item
-        ticket = build_ticket_from_email(item.to_email())
+        ticket = self._ticket_from_email(item.to_email())
         self.set_ticket(ticket)
         self.outlook_queue_list.setCurrentRow(index)
         self.log(f"[outlook] loaded email: {item.subject or '(no subject)'}")
