@@ -50,7 +50,7 @@ class SettingsDialogTests(unittest.TestCase):
                           extra_fields={"priority": "3"})
         editor.set_ticket(original)
         self.assertEqual(editor.ticket(), original)
-        editor.fields["category"].setText("Hardware")
+        editor.fields["category"].setCurrentText("Hardware")
         self.assertEqual(editor.ticket().category, "Hardware")
         self.assertEqual(editor.ticket().extra_fields, {"priority": "3"})
 

@@ -4,6 +4,12 @@
 
 ## Settings menu
 
+For pages on `localhost` or `127.0.0.1`, readiness uses the configured field
+selectors instead of `ready_dom_selector`. At least one mapped field must exist;
+the app fills every mapped field it finds, including accessible frames, and
+reports missing fields. No form element or ServiceNow `g_form` object is required.
+Other hosts continue to use the configured form-ready selector.
+
 Open **Settings > ServiceNow and Outlook** to edit the landing URL and Outlook
 Inbox subfolder. The **Advanced Form Settings** tab contains the allowed URL
 regex, form-ready CSS selector, and field mappings as a JSON array. When changing

@@ -5,6 +5,7 @@ from pathlib import Path
 from PyQt5.QtCore import QObject, QSettings, QTimer, Qt, QUrl, pyqtSignal
 from PyQt5.QtWidgets import (
     QHBoxLayout,
+    QGridLayout,
     QCheckBox,
     QDialog,
     QFileDialog,
@@ -16,7 +17,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
-    QStackedWidget,
+    QTabWidget,
     QScrollArea,
     QTextEdit,
     QVBoxLayout,
@@ -35,7 +36,8 @@ from autoticket_app.features import build_example_ticket, build_ticket_from_emai
 from autoticket_app.category_rules import load_category_rules
 from autoticket_app.rules_store import load_rules_snapshot, save_rules_snapshot
 from autoticket_app.settings_dialog import ServiceNowSettingsDialog
-from autoticket_app.ticket_editor import TicketEditor, QUICK_TICKETS, build_quick_ticket
+from autoticket_app.ticket_editor import QUICK_TICKETS, build_quick_ticket
+from autoticket_app.theme import LIGHT_THEME
 from autoticket_app.models import Ticket
 from autoticket_app.msg_parser import parse_msg
 from autoticket_app.outlook import (
@@ -46,6 +48,7 @@ from autoticket_app.outlook import (
 )
 from autoticket_app.servicenow import (
     build_ready_check_js,
+    is_local_form_url,
     build_servicenow_fill_js,
     is_servicenow_url,
 )
@@ -113,6 +116,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("AutoTicket")
         self.resize(1500, 900)
+        self.setStyleSheet(LIGHT_THEME)
 
         self.local_data_dir = get_local_app_data_dir(APP_NAME)
         config_result = load_servicenow_settings(self.local_data_dir)
@@ -215,45 +219,60 @@ class MainWindow(QMainWindow):
 
     def _build_layout(self):
         right_panel = QWidget()
+        self.right_panel = right_panel
         right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(12, 12, 12, 12)
+        right_layout.setSpacing(12)
         self.debug_toggle = QCheckBox("Show debug views")
         right_layout.addWidget(self.debug_toggle)
         self.active_rules_status = QLabel("Category rules: none loaded")
         self.active_rules_status.setWordWrap(True)
+        self.active_rules_status.setObjectName("badge")
         right_layout.addWidget(self.active_rules_status)
 
-        btn_row = QHBoxLayout()
-        btn_row.addWidget(self.btn_check_ready)
-        btn_row.addWidget(self.btn_fill_json)
-        btn_row.addWidget(self.btn_pretty_json)
-        btn_row.addWidget(self.btn_load_example)
-        btn_row.addWidget(self.btn_clear_log)
+        btn_row = QGridLayout()
+        for index, button in enumerate((self.btn_check_ready, self.btn_fill_json, self.btn_pretty_json,
+                                         self.btn_load_example, self.btn_clear_log)):
+            btn_row.addWidget(button, index // 3, index % 3)
 
-        self.panel_stack = QStackedWidget()
+        self.panel_stack = QTabWidget()
         normal = QWidget()
+        normal.setObjectName("ticketForm")
         normal_layout = QVBoxLayout(normal)
         normal_layout.addWidget(QLabel("Start a ticket"))
         quick_row = QHBoxLayout()
         for name in QUICK_TICKETS:
-            button = QPushButton(name)
+            button = QPushButton({"Password Reset": "Password reset", "Called-in Issue": "Phone issue", "General Inquiry": "Inquiry"}[name])
             button.clicked.connect(lambda checked=False, name=name: self.start_quick_ticket(name))
             quick_row.addWidget(button)
         normal_layout.addLayout(quick_row)
-        self.ticket_editor = TicketEditor()
-        normal_layout.addWidget(self.ticket_editor)
+        self.preview_ticket = Ticket()
+        self.fill_pending = False
+        self.email_preview = QTextEdit()
+        self.email_preview.setReadOnly(True)
+        self.email_preview.setPlaceholderText("Load an email or choose a quick action. Edit ticket fields directly in ServiceNow.")
+        normal_layout.addWidget(QLabel("Source preview"))
+        normal_layout.addWidget(self.email_preview, 1)
         actions = QHBoxLayout()
         blank = QPushButton("New Blank Ticket")
         blank.clicked.connect(lambda: self.start_quick_ticket(None))
-        fill = QPushButton("Fill ServiceNow Form")
-        fill.clicked.connect(self.fill_from_editor)
+        fill = QPushButton("Fill / Retry on Webpage")
+        fill.setObjectName("primary")
+        fill.clicked.connect(self.fill_from_preview)
         actions.addWidget(blank)
         actions.addWidget(fill)
-        normal_layout.addLayout(actions)
-        normal_layout.addWidget(QLabel("Review the filled form in ServiceNow before submitting."))
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(normal)
-        self.panel_stack.addWidget(scroll)
+        ticket_page = QWidget()
+        ticket_layout = QVBoxLayout(ticket_page)
+        ticket_layout.addWidget(scroll, 1)
+        ticket_layout.addLayout(actions)
+        hint = QLabel("Edit and submit in ServiceNow. This preview does not track webpage edits.")
+        hint.setWordWrap(True)
+        hint.setObjectName("muted")
+        ticket_layout.addWidget(hint)
+        self.panel_stack.addTab(ticket_page, "Preview")
         debug = QWidget()
         debug_layout = QVBoxLayout(debug)
         debug_layout.addWidget(QLabel("JSON Test Input"))
@@ -263,18 +282,24 @@ class MainWindow(QMainWindow):
         debug_layout.addWidget(self.parsed_output, 2)
         debug_layout.addWidget(QLabel("Debug Log"))
         debug_layout.addWidget(self.log_output, 2)
-        self.panel_stack.addWidget(debug)
         right_layout.addWidget(self.panel_stack, 4)
-        right_layout.addWidget(self.outlook_folder_label)
+        queue_page = QWidget()
+        queue_layout = QVBoxLayout(queue_page)
+        queue_layout.addWidget(self.outlook_folder_label)
         outlook_btn_row = QHBoxLayout()
         outlook_btn_row.addWidget(self.btn_scan_outlook)
         outlook_btn_row.addWidget(self.btn_load_next_outlook)
         outlook_btn_row.addWidget(self.btn_mark_outlook_acted)
-        right_layout.addLayout(outlook_btn_row)
-        right_layout.addWidget(QLabel("Outlook Queue"))
-        right_layout.addWidget(self.outlook_queue_list, 2)
+        queue_layout.addLayout(outlook_btn_row)
+        queue_layout.addWidget(self.outlook_queue_list, 2)
+        self.panel_stack.addTab(queue_page, "Email Queue (0)")
+        self.panel_stack.addTab(debug, "Debug")
+        self.panel_stack.setTabVisible(2, False)
+        self._previous_panel_index = 0
+        self.panel_stack.currentChanged.connect(self._sidebar_tab_changed)
         self.ticket_status = QLabel("Ready to prepare a ticket")
         self.ticket_status.setWordWrap(True)
+        self.ticket_status.setObjectName("badge")
         right_layout.addWidget(self.ticket_status)
         self.debug_toggle.toggled.connect(self.toggle_debug_views)
         self.debug_toggle.setChecked(self.rules_settings.value("ui/debug_views", False, type=bool))
@@ -290,26 +315,57 @@ class MainWindow(QMainWindow):
         splitter.addWidget(right_panel)
         splitter.setSizes([950, 550])
 
-        self.setCentralWidget(splitter)
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(0, 0, 0, 0)
+        header = QWidget()
+        header.setObjectName("header")
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(18, 12, 18, 12)
+        brand = QLabel("AutoTicket")
+        brand.setObjectName("brand")
+        header_layout.addWidget(brand)
+        subtitle = QLabel("Service desk workspace")
+        subtitle.setObjectName("muted")
+        header_layout.addWidget(subtitle)
+        header_layout.addStretch()
+        home = QPushButton("ServiceNow Home")
+        home.clicked.connect(self.open_landing_page)
+        header_layout.addWidget(home)
+        self.sidebar_button = QPushButton("Hide Ticket Panel")
+        self.sidebar_button.setCheckable(True)
+        self.sidebar_button.toggled.connect(self._toggle_sidebar)
+        header_layout.addWidget(self.sidebar_button)
+        container_layout.addWidget(header)
+        container_layout.addWidget(splitter, 1)
+        self.setCentralWidget(container)
+
+    def _toggle_sidebar(self, hidden):
+        self.right_panel.setVisible(not hidden)
+        self.sidebar_button.setText("Show Ticket Panel" if hidden else "Hide Ticket Panel")
+
+    def _sidebar_tab_changed(self, index):
+        # Debug JSON is an independent draft; switching tabs never writes to the webpage.
+        self._previous_panel_index = index
 
     def toggle_debug_views(self, enabled):
-        try:
-            if enabled:
-                self.set_json(self.ticket_editor.ticket())
-            else:
-                self.ticket_editor.set_ticket(Ticket.from_dict(self.get_json()))
-        except (ValueError, TypeError) as exc:
-            self.debug_toggle.blockSignals(True)
-            self.debug_toggle.setChecked(True)
-            self.debug_toggle.blockSignals(False)
-            QMessageBox.warning(self, "Invalid Ticket JSON", f"Fix the JSON before leaving debug view: {exc}")
-            return
-        self.panel_stack.setCurrentIndex(1 if enabled else 0)
+        if not enabled and self.panel_stack.currentIndex() == 2:
+            self.panel_stack.setCurrentIndex(0)
+            if self.panel_stack.currentIndex() == 2:
+                self.debug_toggle.blockSignals(True)
+                self.debug_toggle.setChecked(True)
+                self.debug_toggle.blockSignals(False)
+                return
+        self.panel_stack.setTabVisible(2, enabled)
+        if enabled:
+            self.panel_stack.setCurrentIndex(2)
         self.rules_settings.setValue("ui/debug_views", enabled)
         self.rules_settings.sync()
 
     def start_quick_ticket(self, name):
-        current = self.ticket_editor.ticket()
+        if self.fill_pending:
+            return
+        current = self.preview_ticket
         if any(str(value).strip() for value in current.to_dict().values()):
             answer = QMessageBox.question(self, "Start New Ticket", "Replace the current ticket draft?",
                                           QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
@@ -317,15 +373,56 @@ class MainWindow(QMainWindow):
                 return
         self.current_outlook_item = None
         self.set_ticket(build_quick_ticket(name) if name else Ticket())
-        self.ticket_status.setText(f"{name or 'Blank ticket'} draft ready. Add caller and issue details.")
+        self.panel_stack.setCurrentIndex(0)
+        self.fill_from_preview()
 
-    def fill_from_editor(self):
-        ticket = self.ticket_editor.ticket()
-        if not ticket.short_description.strip():
-            QMessageBox.warning(self, "Summary Required", "Enter a ticket summary before filling the form.")
+    def fill_from_preview(self):
+        self._request_web_fill(self.preview_ticket)
+
+    def _request_web_fill(self, ticket):
+        if self.fill_pending:
             return
-        self.set_ticket(ticket)
-        self.fill_from_json()
+        url = self.view.url().toString()
+        if not is_servicenow_url(url, self.servicenow_settings.host_regex, self.servicenow_settings.start_url):
+            self.ticket_status.setText("This page is outside the configured ServiceNow host. Check the landing URL in Settings.")
+            return
+        self.fill_pending = True
+        self.btn_load_next_outlook.setEnabled(False)
+        self.ticket_status.setText("Checking ServiceNow form...")
+        def ready_checked(result):
+            if self.view.url().toString() != url or not isinstance(result, dict) or not result.get("ready"):
+                self._finish_web_fill()
+                error = result.get("error") if isinstance(result, dict) else "No response from browser"
+                self.ticket_status.setText(f"Cannot fill: {error}" if error else "Form not found. Open the ticket form or check the form-ready selector in Settings.")
+                self.log(f"[fill][ready] {result}")
+                return
+            answer = QMessageBox.question(
+                self, "Replace Webpage Fields?",
+                "Fill this draft into ServiceNow? Existing mapped fields, including any unsaved edits, may be replaced. "
+                "Submit or finish the current ticket first if needed. This action does not submit a ticket.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer != QMessageBox.Yes or self.view.url().toString() != url:
+                self._finish_web_fill()
+                self.ticket_status.setText("Preview loaded. Webpage left unchanged.")
+                return
+            self.ticket_status.setText("Filling ServiceNow form...")
+            try:
+                js = build_servicenow_fill_js(ticket, self.servicenow_settings.field_bindings,
+                                             self.servicenow_settings.ready_dom_selector,
+                                             local_fields_only=is_local_form_url(url))
+                self.run_browser_js(js, self.on_fill_result, "fill")
+            except Exception as exc:
+                self.on_fill_result({"error": str(exc)})
+        try:
+            self.run_browser_js(build_ready_check_js(self.servicenow_settings.ready_dom_selector,
+                                self.servicenow_settings.field_bindings,
+                                local_fields_only=is_local_form_url(url)), ready_checked, "ready")
+        except Exception as exc:
+            self.on_fill_result({"error": str(exc)})
+
+    def _finish_web_fill(self):
+        self.fill_pending = False
+        self.btn_load_next_outlook.setEnabled(True)
 
     def _log_startup(self):
         self.log(f"[profile] local data dir: {self.local_data_dir}")
@@ -496,7 +593,7 @@ class MainWindow(QMainWindow):
             return
 
         url = self.view.url().toString()
-        if not is_servicenow_url(url, self.servicenow_settings.host_regex):
+        if not is_servicenow_url(url, self.servicenow_settings.host_regex, self.servicenow_settings.start_url):
             self.log("[ready] not on ServiceNow host")
             self.drop_label.set_armed(False)
             return
@@ -504,7 +601,9 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(500, self.check_dom_ready)
 
     def check_dom_ready(self):
-        js = build_ready_check_js(self.servicenow_settings.ready_dom_selector)
+        js = build_ready_check_js(self.servicenow_settings.ready_dom_selector,
+                                 self.servicenow_settings.field_bindings,
+                                 local_fields_only=is_local_form_url(self.view.url().toString()))
         self.run_browser_js(js, self.on_ready_checked, "ready")
 
     def run_browser_js(self, js: str, callback, operation: str):
@@ -634,13 +733,17 @@ class MainWindow(QMainWindow):
         return ticket
 
     def load_msg_file(self, path: str):
+        if self.fill_pending:
+            return
         self.log(f"[msg] loading {path}")
         try:
             email = parse_msg(path)
             ticket = self._ticket_from_email(email)
             self.current_outlook_item = None
             self.set_ticket(ticket)
-            self.log("[msg] parsed and loaded into JSON panel")
+            self.panel_stack.setCurrentIndex(0)
+            self.fill_from_preview()
+            self.log("[msg] parsed and loaded into preview")
         except Exception as exc:
             QMessageBox.critical(self, "MSG Parse Error", str(exc))
             self.log(f"[msg][error] {exc}")
@@ -669,6 +772,7 @@ class MainWindow(QMainWindow):
 
     def refresh_outlook_queue_list(self):
         self.outlook_queue_list.clear()
+        self.panel_stack.setTabText(1, f"Email Queue ({len(self.outlook_queue)})")
         for item in self.outlook_queue:
             received = f"{item.received_at} | " if item.received_at else ""
             sender = item.sender_email or item.sender_name or "(unknown sender)"
@@ -680,6 +784,8 @@ class MainWindow(QMainWindow):
         return index if 0 <= index < len(self.outlook_queue) else 0
 
     def load_next_outlook_email(self):
+        if self.fill_pending:
+            return
         if not self.outlook_queue:
             self.scan_outlook()
             if not self.outlook_queue:
@@ -691,6 +797,9 @@ class MainWindow(QMainWindow):
         ticket = self._ticket_from_email(item.to_email())
         self.set_ticket(ticket)
         self.outlook_queue_list.setCurrentRow(index)
+        self.panel_stack.setCurrentIndex(0)
+        self.sidebar_button.setChecked(False)
+        self.fill_from_preview()
         self.log(f"[outlook] loaded email: {item.subject or '(no subject)'}")
 
     def mark_current_outlook_acted(self):
@@ -706,7 +815,13 @@ class MainWindow(QMainWindow):
         self.log("[outlook] marked current email as acted")
 
     def set_ticket(self, ticket: Ticket):
-        self.ticket_editor.set_ticket(ticket)
+        self.preview_ticket = Ticket.from_dict(ticket.to_dict())
+        caller = ticket.caller_name or ticket.caller_email or "Not provided"
+        self.email_preview.setPlainText(
+            f"{ticket.short_description or '(Blank draft)'}\n\n"
+            f"Caller: {caller}\nEmail: {ticket.caller_email or 'Not provided'}\n"
+            f"Suggested category: {ticket.category or 'Not matched'}"
+            f" / {ticket.subcategory or 'Not matched'}\n\n{ticket.description}")
         data = ticket.to_dict()
         self.set_json(data)
         self.parsed_output.setPlainText(json.dumps(data, indent=2))
@@ -744,17 +859,19 @@ class MainWindow(QMainWindow):
             self.log(f"[fill][error] invalid json: {exc}")
             return
 
-        js = build_servicenow_fill_js(ticket, self.servicenow_settings.field_bindings)
-        self.log("[fill] running JS")
-        self.run_browser_js(js, self.on_fill_result, "fill")
+        self._request_web_fill(ticket)
 
     def on_fill_result(self, result):
+        self._finish_web_fill()
         try:
             pretty = json.dumps(result, indent=2)
         except Exception:
             pretty = str(result)
         self.log(f"[fill][result]\n{pretty}")
         if not isinstance(result, dict) or result.get("error"):
-            self.ticket_status.setText("Could not confirm the form fill. Check the ServiceNow page or enable debug views for details.")
+            error = result.get("error", "No browser response") if isinstance(result, dict) else "No browser response"
+            self.ticket_status.setText(f"Form fill failed: {error}")
         else:
-            self.ticket_status.setText("Form fill finished. Review the ServiceNow form and check any missing fields.")
+            missing = [key for key, value in result.items() if value is False]
+            self.ticket_status.setText("Could not fill: " + ", ".join(missing) + ". Check field mappings in Settings."
+                                      if missing else "Form fill finished. Review the ServiceNow form before submitting.")
